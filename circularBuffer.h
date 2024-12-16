@@ -11,19 +11,29 @@
 
 
 typedef struct circularlyLinkedList {
-    void* next;
+    struct circularlyLinkedList* next;
     unsigned int index;
     int data;
 }circularlyLinkedList;
 
-extern void printThreadAction(circularlyLinkedList* item, bool producer);
+typedef struct {
+    circularlyLinkedList* buffer;
+    int burstLength;
+    int* transactionLength;
+    int* consumerToProducerGap;
+    int* producerToConsumerGap;
+    sem_t lock;
+}args;
 
-extern void printDivider(){
+
+void printThreadAction(circularlyLinkedList* item, bool producer);
+
+void printDivider(){
     printf("========================================\n");
 }
 
 /*Always call the cleanup function cleanupCircularBuffer() from this header on each reference returned from this function.*/
-extern circularlyLinkedList* initializeCircularBuffer(int bufferSize){
+circularlyLinkedList* initializeCircularBuffer(int bufferSize){
     printf("Creating Circular Buffer with Size: %d\n", bufferSize);
     printDivider();
     circularlyLinkedList* lag;
@@ -46,47 +56,48 @@ extern circularlyLinkedList* initializeCircularBuffer(int bufferSize){
     return first;
 }
 
-extern void cleanupCircularBuffer(circularlyLinkedList* base, circularlyLinkedList* next){
+void cleanupCircularBuffer(circularlyLinkedList* base, circularlyLinkedList* next){
     if(base != next) {
         cleanupCircularBuffer(base, next->next);
     }
     free(next);
 }
 
-extern void bufferConsume(circularlyLinkedList* baseBuffer, sem_t lock, int* transactionLength){
-    circularlyLinkedList* curr = baseBuffer;
-    while (*transactionLength > 0 ) {
-        sem_wait(&lock);
-        circularlyLinkedList* curr = baseBuffer;
-        while( *transactionLength > 0){
-            if (curr->data != -1) {
-                printThreadAction(curr, false);
-                curr->data = -1;
-                *transactionLength -= 1;
-                curr = curr->next;
-            } else {
-                sem_post(&lock);
-            }
-        }
-    }
-}
-
-extern void bufferProduce(circularlyLinkedList* baseBuffer, int burstLength, sem_t lock, int* transactionLength){
-    circularlyLinkedList* curr = baseBuffer;
-    while (*transactionLength > 0 ){
-        sem_wait(&lock);
-        for (int i = 0; i < burstLength; ++i) {
-            curr->data = rand()%100; // not actually random, should generate the same values each run.
-            printThreadAction(curr, true);
-            *transactionLength -= 1;
+void* consume(void* arg){
+    args* send = (args*) arg;
+    circularlyLinkedList* curr = send->buffer;
+    while (*send->transactionLength > 0) {
+        if (*send->consumerToProducerGap > 0 && sem_trywait(&send->lock)==0) {
+            printThreadAction(curr, false);
+            --*send->transactionLength;
+            --*send->consumerToProducerGap;
+            ++*send->producerToConsumerGap;
             curr = curr->next;
+            sem_post(&send->lock);
         }
-        sem_post(&lock);
     }
 }
 
+void* produce(void* arg){
+    srand(0);
+    args* send = (args*) arg;
+    circularlyLinkedList* curr = send->buffer;
+    while (*send->transactionLength > 0){
+        if(*send->producerToConsumerGap >= send->burstLength && sem_trywait(&send->lock) == 0){
+            for (int i = 0; i < send->burstLength; ++i) {
+                curr->data = rand() % 100; // not actually random, should generate the same values each run.
+                printThreadAction(curr, true);
+                ++*send->consumerToProducerGap;
+                --*send->producerToConsumerGap;
+                --*send->transactionLength;
+                curr = curr->next;
+            }
+            sem_post(&send->lock);
+        }
+    }
+}
 
-extern void printThreadAction(circularlyLinkedList* item, bool producer){
+void printThreadAction(circularlyLinkedList* item, bool producer){
     char* string = (producer == true)? "Producer Produced": "Consumer Consumed";
     static int transactionNumber = 0;
     printf("Sequence #: %d Buffer Index %d, %s %d\n", transactionNumber, item->index, string, item->data);

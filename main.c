@@ -4,57 +4,8 @@
 #include "circularBuffer.h"
 #include <unistd.h>
 
-#include <stdio.h>
-#include <pthread.h>
-#include <semaphore.h>
-#include <unistd.h>
-
-sem_t lock;
-
-typedef struct {
-    circularlyLinkedList* buffer;
-    int burstLength;
-    int* transactionLength;
-}args;
-
-void* consume(void * arg){
-    args* send = (args*) arg;
-    circularlyLinkedList* curr = send->buffer;
-    while (*send->transactionLength > 0 ) {
-        sem_wait(&lock);
-        sleep(1);
-        if (curr->data != -1) {
-            printThreadAction(curr, false);
-            curr->data = -1;
-            *send->transactionLength -= 1;
-            curr = curr->next;
-        } else {
-            sem_post(&lock);
-        }
-    }
-    /*bufferConsume(send->buffer, lock, send->transactionLength);*/
-}
-
-void* produce(void* arg){
-    srand(0);
-    args* send = (args*) arg;
-    circularlyLinkedList* curr = send->buffer;
-    while (*send->transactionLength > 0 ){
-        sem_wait(&lock);
-        sleep(1);
-        for (int i = 0; i < send->burstLength; ++i) {
-            curr->data = rand()%100; // not actually random, should generate the same values each run.
-            printThreadAction(curr, true);
-            *send->transactionLength -= 1;
-            curr = curr->next;
-        }
-        sem_post(&lock);
-    }
-    /*bufferProduce(send->buffer, send->burstLength, lock, send->transactionLength);*/
-}
-
 int main(void) {
-    int bufferLength, burstLength, transactionLength;
+    int bufferLength, burstLength, transactionLength, gap = 0;
 
     printf("Enter the size of the Circular Buffer: ");
     scanf("%d",&bufferLength);
@@ -69,16 +20,17 @@ int main(void) {
     // call initialization function
     circularlyLinkedList* buffer = initializeCircularBuffer(bufferLength);
 
-    sem_init(&lock, 0,1);
-
     // forward declaration of threads
     pthread_t producer, consumer;
 
-    // Set args
+    // Initialize arguments struct
     args* arguments = malloc(sizeof (args));
+    sem_init(&arguments->lock, 0,1);
     arguments->transactionLength = &transactionLength;
     arguments->buffer = buffer;
     arguments->burstLength = burstLength;
+    arguments->producerToConsumerGap = &bufferLength; // bufferLength is no longer used and thus can be altered.
+    arguments->consumerToProducerGap = &gap;
 
     // start threads
     printf("Starting threads");
@@ -91,7 +43,7 @@ int main(void) {
     pthread_join(consumer, NULL);
 
     // cleanup
-    sem_destroy(&lock);
+    sem_destroy(&arguments->lock);
     free(arguments);
     cleanupCircularBuffer(buffer, buffer->next);
     return 0;
